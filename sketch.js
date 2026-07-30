@@ -1,11 +1,10 @@
 /* ==========================================================================
    VOID // VERSE
    --------------------------------------------------------------------------
-   Interactive intro (follow the mystic light through the jungle) -> the fall
-   into the void -> Rainforest Rift -> Galactic Wasteland. One shared Perlin
-   flow field drives grid drift, mist, debris, and now danger — debris hurts
-   you, power-ups counter it, and portal/shard layouts are patterned instead
-   of fixed corners.
+   Follow the mystic light -> fall through the seam -> four rooms of the void.
+   Match shards to portals, dodge what drifts, and pocket the loose light that
+   was never part of the puzzle. Combine what you pocket. What you carry when
+   the last wall gives decides how this ends.
    ========================================================================== */
 
 // ---------- shared flow field ----------
@@ -55,15 +54,38 @@ let relicSpawned = false;
 let currentRoomIndex = 0;
 let gameEnded = false;
 
-// ---------- crafting / materials (persist across rooms) ----------
-let materials = [];        // { id, col, kind: 'wild' | 'key' }
+// ---------- crafting ----------
+// Two raw materials fall loose in the void, one flavour per biome. Everything
+// else is something you made. Each crafted thing does its work just by being
+// carried — there is no "use" button, only what you chose to hold.
+const MATERIAL_TYPES = {
+  mote:    { col: [140, 255, 190], label: 'MOTE',    note: 'living light, from the green rooms' },
+  cinder:  { col: [190, 150, 255], label: 'CINDER',  note: 'dead star matter, from the cold rooms' },
+  bloom:   { col: [120, 255, 175], label: 'BLOOM',   note: 'mends you, slowly, while you hold it' },
+  key:     { col: [255, 210, 110], label: 'KEY',     note: 'opens what the void hid' },
+  lantern: { col: [255, 240, 180], label: 'LANTERN', note: 'reveals the hidden — and calms the drift' },
+  seed:    { col: [255, 255, 225], label: 'SEED',    note: 'something that could still grow' },
+};
+
+const RECIPES = [
+  { a: 'mote',  b: 'mote',    out: 'bloom' },
+  { a: 'cinder', b: 'cinder', out: 'key' },
+  { a: 'mote',  b: 'cinder',  out: 'lantern' },
+  { a: 'bloom', b: 'lantern', out: 'seed' },
+];
+
+let materials = [];        // { id, kind }
 let materialIdCounter = 0;
 let heldMaterialIdx = null;
-const WILD_COLOR = [230, 210, 255];
-const KEY_COLOR = [255, 210, 110];
-const MATERIAL_TRAY_X = 20;
-const MATERIAL_TRAY_Y = 82;
-const MATERIAL_GAP = 20;
+let discoveredRecipes = [];
+let bloomTimer = 0;
+
+const MATERIAL_TRAY_X = 22;
+const MATERIAL_TRAY_Y = 84;
+const MATERIAL_GAP = 22;
+
+function hasMaterial(kind) { return materials.some(m => m.kind === kind); }
+function matCol(kind) { return MATERIAL_TYPES[kind].col; }
 
 // ---------- secrets ----------
 let secretGlyphObj = null;
@@ -72,10 +94,26 @@ let secretVignetteText = "";
 
 // ---------- craft feedback ----------
 let craftMessage = "";
+let craftMessageSub = "";
 let craftMessageTimer = 0;
+let craftMessageCol = [255, 210, 110];
 
 // ---------- game state ----------
-let gameState = 'intro'; // 'intro' | 'playing'
+let gameState = 'intro'; // 'intro' | 'playing' | 'finale'
+
+// ---------- finale ----------
+// Paced in milliseconds, not frames — this gets shown on machines I can't test,
+// and the ending should breathe the same on all of them.
+let finalePhase = 'hush';
+let finalePhaseStart = 0;
+let finaleSeed = false;   // locked in the moment the last wall gives
+let finaleFireflies = [];
+const HUSH_MS = 2000;
+const UNRAVEL_MS = 3800;
+
+function phaseMs() { return millis() - finalePhaseStart; }
+// 1.0 at 60fps; scales motion so the unravel drifts at one speed everywhere.
+function dtScale() { return constrain(deltaTime, 8, 50) / 16.67; }
 
 // ---------- intro (lore delivered as interactive follow sequence) ----------
 const INTRO_STEPS = [
@@ -144,8 +182,8 @@ const ROOMS = [
     secretText: "the moonlight shard remembers a village that hasn't been built yet, or has already fallen.",
   },
   {
-    // New mechanic: portals slowly orbit their anchor point, so a drop has
-    // to be timed against motion instead of aimed at a fixed target.
+    // Portals slowly orbit their anchor, so a drop has to be timed against
+    // motion instead of aimed at a fixed target.
     name: "THE HOLLOW CANOPY",
     biomeType: "rainforest",
     gridColor: [110, 210, 190],
@@ -156,11 +194,12 @@ const ROOMS = [
     wallCount: 0,
     driftPortals: true,
     instabilityBoost: 0.05,
+    secretGlyph: { x: 300, y: 120 },
+    secretText: "the canopy keeps a hollow where the mist pools. something small sleeps in it, and it is not afraid of you.",
   },
   {
-    // New mechanic: two walls instead of one — this room can't be solved on
-    // a single fragment. It rewards conserving fragments from earlier rooms
-    // rather than spending them the moment you get one.
+    // Two walls — this room can't be solved on a single fragment. It rewards
+    // conserving fragments from earlier rooms.
     name: "THE STATIC REEF",
     biomeType: "galactic",
     gridColor: [231, 120, 90],
@@ -237,6 +276,20 @@ function startPlaying() {
   inventory = 0;
   gameEnded = false;
   gameState = 'playing';
+  loadRoom(0);
+}
+
+function fullReset() {
+  PLAYER_MAX_HP = 3;
+  player.hp = 3;
+  materials = [];
+  discoveredRecipes = [];
+  inventory = 0;
+  gameEnded = false;
+  gameState = 'playing';
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) blocks[i][j].reset();
+  }
   loadRoom(0);
 }
 
@@ -332,11 +385,17 @@ function loadRoom(idx) {
     shards.push(new Shard(sx, sy, colors[i]));
   }
 
-  let wildAngle = random(360);
-  let wildR = 220;
-  let wx = constrain(width / 2 + cos(wildAngle) * wildR, 40, width - 40);
-  let wy = constrain(height / 2 + sin(wildAngle) * wildR, 40, height - 40);
-  shards.push(new Shard(wx, wy, WILD_COLOR, true));
+  // Two loose ones per room, flavoured by the biome. They match no portal —
+  // they're only good for what you decide to make out of them.
+  let wildKind = room.biomeType === 'rainforest' ? 'mote' : 'cinder';
+  let baseAng = random(360);
+  for (let k = 0; k < 2; k++) {
+    let ang = baseAng + 180 * k + random(-40, 40);
+    let r = random(190, 240);
+    let wx = constrain(width / 2 + cos(ang) * r, 40, width - 40);
+    let wy = constrain(height / 2 + sin(ang) * r, 40, height - 40);
+    shards.push(new Shard(wx, wy, matCol(wildKind), wildKind));
+  }
 
   secretGlyphObj = room.secretGlyph ? new SecretGlyph(room.secretGlyph.x, room.secretGlyph.y) : null;
   inSecretVignette = false;
@@ -373,6 +432,12 @@ function draw() {
     return;
   }
 
+  if (gameState === 'finale') {
+    drawFinale();
+    pop();
+    return;
+  }
+
   // ---- gameState === 'playing' ----
   updateAndDisplayDebris();
 
@@ -401,6 +466,7 @@ function draw() {
   updatePlayer();
   displayPlayer();
   updateActiveEffects();
+  updateCarriedEffects();
   handlePlayerDebrisCollisions();
   handleWildShardPickup();
 
@@ -432,30 +498,8 @@ function draw() {
     hitFlash -= 10;
   }
 
-  if (craftMessageTimer > 0) {
-    push();
-    textAlign(CENTER, CENTER);
-    let a = map(craftMessageTimer, 0, 100, 0, 230, true);
-    fill(KEY_COLOR[0], KEY_COLOR[1], KEY_COLOR[2], a);
-    textSize(12);
-    text(craftMessage, width / 2, height / 2 + 70);
-    pop();
-    craftMessageTimer--;
-  }
-
+  drawCraftMessage();
   drawHUD();
-
-  if (gameEnded) {
-    push();
-    textAlign(CENTER, CENTER);
-    fill(255, 200 + 55 * sin(frameCount * 4));
-    textSize(16);
-    text("THE MATRIX CRACKS OPEN...", width / 2, height / 2 - 10);
-    textSize(10);
-    fill(180);
-    text("(more worlds await — click to wander again)", width / 2, height / 2 + 14);
-    pop();
-  }
 
   if (transitioning) {
     push(); noStroke(); fill(0, transitionAlpha); rect(width / 2, height / 2, width, height); pop();
@@ -464,8 +508,7 @@ function draw() {
       transitionAlpha += 8;
       if (transitionAlpha >= 255) {
         if (pendingEnd) {
-          gameEnded = true;
-          transitioning = false;
+          beginFinale();
         } else {
           loadRoom(nextRoomIndex);
           transitionPhase = 'in';
@@ -530,6 +573,171 @@ function drawIntro() {
   pop();
 }
 
+// ============================== finale =====================================
+// The grid has been the void's cage for the whole game. Here it comes apart.
+// What it comes apart *into* depends on whether you made something that could
+// still grow, or just made it out.
+
+function beginFinale() {
+  gameState = 'finale';
+  finalePhase = 'hush';
+  finalePhaseStart = millis();
+  finaleSeed = hasMaterial('seed');
+  finaleFireflies = [];
+  transitioning = false;
+  transitionAlpha = 0;
+  held = null;
+  heldMaterialIdx = null;
+  debris = [];
+  particles = [];
+}
+
+function releaseGrid() {
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) {
+      // Only half the grid lifts; the rest dims out so the screen can breathe.
+      if ((i + j) % 2 === 0) blocks[i][j].release(finaleSeed);
+      else blocks[i][j].dissolve();
+    }
+  }
+}
+
+function drawFinale() {
+  let t = phaseMs();
+
+  if (finalePhase === 'hush') {
+    if (t < 40) triggerShake(10);
+    updatePlayer();
+    displayPlayer();
+
+    push();
+    textAlign(CENTER, CENTER);
+    let a = constrain(map(t, 0, 700, 0, 220), 0, 220);
+    fill(210, 230, 255, a);
+    textSize(13);
+    text("the last wall gives.", width / 2, height / 2);
+    pop();
+
+    if (t > HUSH_MS) {
+      finalePhase = 'unravel';
+      finalePhaseStart = millis();
+      releaseGrid();
+      triggerShake(16);
+    }
+    return;
+  }
+
+  if (finalePhase === 'unravel') {
+    updatePlayer();
+    displayPlayer();
+
+    if (finaleSeed) {
+      // The lifted grid keeps rising as warm light. Seed the sky with more.
+      if (frameCount % 2 === 0 && finaleFireflies.length < 150) {
+        finaleFireflies.push(new EndFirefly(random(width), height + random(10, 120)));
+      }
+    }
+    for (let f of finaleFireflies) { f.update(); f.display(); }
+
+    push();
+    textAlign(CENTER, CENTER);
+    let a = constrain(map(t, 400, 1600, 0, 200), 0, 200);
+    fill(210, 230, 255, a * 0.8);
+    textSize(11);
+    text(finaleSeed ? "it doesn't collapse. it lets go."
+                    : "the grid comes apart, and keeps nothing.",
+         width / 2, height - 60);
+    pop();
+
+    if (t > UNRAVEL_MS) { finalePhase = 'reveal'; finalePhaseStart = millis(); }
+    return;
+  }
+
+  // ---- reveal ----
+  if (finaleSeed && frameCount % 4 === 0 && finaleFireflies.length < 150) {
+    finaleFireflies.push(new EndFirefly(random(width), height + random(10, 60)));
+  }
+  for (let f of finaleFireflies) { f.update(); f.display(); }
+
+  if (finaleSeed) {
+    // The light from the very first scene comes back, and waits.
+    if (!firefly) firefly = new Firefly(width / 2, height / 2);
+    firefly.setTarget(width / 2, height / 2 - 40);
+    firefly.update();
+    firefly.display();
+  }
+
+  updatePlayer();
+  displayPlayer();
+
+  push();
+  textAlign(CENTER, CENTER);
+  let a = constrain(map(t, 200, 1000, 0, 255), 0, 255);
+
+  if (finaleSeed) {
+    fill(255, 245, 210, a);
+    textSize(14);
+    text("you didn't break the matrix.", width / 2, height / 2 + 60);
+    let a2 = constrain(map(t, 1300, 2100, 0, 255), 0, 255);
+    fill(180, 255, 210, a2);
+    textSize(14);
+    text("you let the forest back in.", width / 2, height / 2 + 88);
+    let a3 = constrain(map(t, 2600, 3400, 0, 190), 0, 190);
+    fill(200, 220, 240, a3);
+    textSize(10);
+    text("the light was never leading you away from home.", width / 2, height / 2 + 128);
+  } else {
+    fill(220, 230, 245, a);
+    textSize(14);
+    text("you got out.", width / 2, height / 2 + 60);
+    let a2 = constrain(map(t, 1300, 2100, 0, 235), 0, 235);
+    fill(190, 200, 220, a2);
+    textSize(12);
+    text("you're not sure what you left in there.", width / 2, height / 2 + 88);
+    let a3 = constrain(map(t, 2600, 3400, 0, 175), 0, 175);
+    fill(230, 210, 255, a3);
+    textSize(10);
+    text("something could have grown, if you'd carried it out.", width / 2, height / 2 + 128);
+  }
+
+  let a4 = constrain(map(t, 3800, 4500, 0, 160), 0, 160);
+  fill(150, 170, 190, a4);
+  textSize(9);
+  text("(click to wander again)", width / 2, height - 40);
+  pop();
+
+  if (t > 4000) gameEnded = true;
+}
+
+class EndFirefly {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.t = random(1000);
+    this.vy = random(-0.7, -0.25);
+    this.sz = random(3, 6);
+    this.hueShift = random(-30, 30);
+  }
+  update() {
+    this.t += 0.05;
+    this.y += this.vy;
+    this.x += sin(this.t * 40) * 0.4;
+    if (this.y < -20) { this.y = height + 20; this.x = random(width); }
+  }
+  display() {
+    push();
+    translate(this.x, this.y);
+    noStroke();
+    let pulse = 150 + 105 * sin(this.t * 90);
+    for (let r = this.sz * 3; r > 0; r -= 3) {
+      fill(255, 225 + this.hueShift * 0.2, 150, map(r, 0, this.sz * 3, 70, 5));
+      rect(0, 0, r, r);
+    }
+    fill(255, 248, 210, pulse);
+    rect(0, 0, this.sz * 0.7, this.sz * 0.7);
+    pop();
+  }
+}
+
 // ============================== HUD =========================================
 
 function drawHUD() {
@@ -560,12 +768,13 @@ function drawHUD() {
       ey += 14;
     }
   }
+  if (hasMaterial('lantern')) { fill(255, 240, 180, 200); text("LANTERN LIT", width - 14, ey); ey += 14; }
+  if (hasMaterial('bloom'))   { fill(120, 255, 175, 200); text("BLOOM MENDING", width - 14, ey); ey += 14; }
+  if (hasMaterial('seed'))    { fill(255, 255, 225, 220); text("SEED CARRIED", width - 14, ey); ey += 14; }
 
   let unbrokenWalls = walls.filter(w => !w.broken).length;
   let msg = "";
-  if (gameEnded) {
-    msg = "";
-  } else if (unbrokenWalls > 0) {
+  if (unbrokenWalls > 0) {
     if (inventory > 0) {
       msg = unbrokenWalls > 1
         ? "click a fractured wall to break it open — " + unbrokenWalls + " remain"
@@ -583,13 +792,16 @@ function drawHUD() {
   fill(180, 200, 220, 160);
   text(msg, width / 2, height - 12);
 
-  if (secretGlyphObj && !secretGlyphObj.opened && materials.some(m => m.kind === 'key')) {
+  if (secretGlyphObj && !secretGlyphObj.opened && (hasMaterial('key') || hasMaterial('lantern'))) {
     fill(230, 210, 255, 130);
     textSize(9);
-    text("something answers, faintly", width / 2, height - 27);
+    text(hasMaterial('key') ? "something answers, faintly"
+                            : "the lantern shows it — but it stays shut without a key",
+         width / 2, height - 27);
   }
 
   drawMaterialsTray();
+  drawRecipeBook();
   pop();
 }
 
@@ -613,13 +825,23 @@ function displayPlayer() {
   push();
   translate(player.x, player.y);
   noStroke();
+
+  // Carrying the seed changes how you look, everywhere, for the rest of the run.
+  let seedGlow = hasMaterial('seed');
   for (let r = 18; r > 0; r -= 4) {
-    fill(180, 255, 220, map(r, 0, 18, 90, 6));
+    if (seedGlow) fill(255, 250, 210, map(r, 0, 18, 110, 8));
+    else fill(180, 255, 220, map(r, 0, 18, 90, 6));
     rect(0, 0, r, r);
   }
   fill(255);
   rect(0, 0, 6, 6);
 
+  if (seedGlow) {
+    noFill();
+    strokeWeight(1);
+    stroke(255, 245, 200, 70 + 50 * sin(frameCount * 3));
+    rect(0, 0, 30 + 3 * sin(frameCount * 2), 30 + 3 * sin(frameCount * 2));
+  }
   if (activeEffects.shield > 0) {
     noFill();
     strokeWeight(2);
@@ -668,6 +890,22 @@ function handlePlayerDebrisCollisions() {
 function updateActiveEffects() {
   for (const k in activeEffects) {
     if (activeEffects[k] > 0) activeEffects[k]--;
+  }
+}
+
+// What you're carrying works on its own, without being spent.
+function updateCarriedEffects() {
+  if (hasMaterial('bloom')) {
+    bloomTimer++;
+    if (bloomTimer >= 600) {          // ~10s
+      bloomTimer = 0;
+      if (player.hp < PLAYER_MAX_HP) {
+        player.hp++;
+        spawnBurst(player.x, player.y, matCol('bloom'));
+      }
+    }
+  } else {
+    bloomTimer = 0;
   }
 }
 
@@ -753,21 +991,18 @@ function updateAndDisplayParticles() {
 
 // ---- interaction --------------------------------------------------------
 function mousePressed() {
+  if (gameState === 'finale') {
+    if (gameEnded) { fullReset(); }
+    return;
+  }
   if (gameState !== 'playing') return;
 
   if (inSecretVignette) { inSecretVignette = false; return; }
 
-  if (gameEnded) {
-    loadRoom(0);
-    inventory = 0;
-    gameEnded = false;
-    return;
-  }
-
   for (let i = 0; i < materials.length; i++) {
     let mx = MATERIAL_TRAY_X + i * MATERIAL_GAP;
     let my = MATERIAL_TRAY_Y;
-    if (dist(mouseX, mouseY, mx, my) < 10) {
+    if (dist(mouseX, mouseY, mx, my) < 11) {
       heldMaterialIdx = i;
       return;
     }
@@ -814,7 +1049,7 @@ function mouseReleased() {
       if (i === heldMaterialIdx) continue;
       let mx = MATERIAL_TRAY_X + i * MATERIAL_GAP;
       let my = MATERIAL_TRAY_Y;
-      if (dist(mouseX, mouseY, mx, my) < 10) { target = i; break; }
+      if (dist(mouseX, mouseY, mx, my) < 11) { target = i; break; }
     }
     if (target !== null) combineMaterials(heldMaterialIdx, target);
     heldMaterialIdx = null;
@@ -841,12 +1076,43 @@ class Block {
   constructor(x, y) {
     this.origX = x; this.origY = y; this.x = x; this.y = y;
     this.angle = 0; this.c = 70;
+    this.released = false; this.warm = false; this.fading = false;
+    this.vx = 0; this.vy = 0; this.alpha = 255; this.spin = 0;
   }
+  reset() {
+    this.x = this.origX; this.y = this.origY;
+    this.angle = 0; this.c = 70;
+    this.released = false; this.warm = false; this.fading = false;
+    this.vx = 0; this.vy = 0; this.alpha = 255; this.spin = 0;
+  }
+  release(warm) {
+    this.released = true;
+    this.warm = warm;
+    this.spin = random(-3, 3);
+    if (warm) {
+      // lifts, like it was never a wall
+      this.vx = random(-0.3, 0.3);
+      this.vy = random(-1.6, -0.5);
+    } else {
+      // falls out from under itself
+      this.vx = random(-0.4, 0.4);
+      this.vy = random(0.4, 1.5);
+    }
+  }
+  dissolve() { this.fading = true; }
   display() {
     push();
     noFill();
-    let factor = map(this.c, 70, 255, 0.35, 1);
-    stroke(gridColor[0] * factor, gridColor[1] * factor, gridColor[2] * factor);
+    if (this.released) {
+      let a = this.alpha;
+      if (this.warm) stroke(255, 225, 160, a);
+      else stroke(90, 95, 110, a * 0.8);
+    } else if (this.fading) {
+      stroke(gridColor[0] * 0.35, gridColor[1] * 0.35, gridColor[2] * 0.35, this.alpha);
+    } else {
+      let factor = map(this.c, 70, 255, 0.35, 1);
+      stroke(gridColor[0] * factor, gridColor[1] * factor, gridColor[2] * factor);
+    }
     translate(this.x, this.y);
     rotate(this.angle);
     let nSize = noise(this.origX * 0.005, this.origY * 0.005, frameCount * 0.01);
@@ -855,6 +1121,25 @@ class Block {
     pop();
   }
   move() {
+    if (this.released) {
+      let d = dtScale();
+      this.x += this.vx * d;
+      this.y += this.vy * d;
+      this.angle += this.spin * d;
+      if (this.warm) {
+        this.x += sin(frameCount * 2 + this.origX) * 0.15 * d;
+        this.alpha = max(0, this.alpha - 0.5 * d);
+      } else {
+        this.vy += 0.02 * d;
+        this.alpha = max(0, this.alpha - 1.0 * d);
+      }
+      return;
+    }
+    if (this.fading) {
+      this.alpha = max(0, this.alpha - 2.0 * dtScale());
+      return;
+    }
+
     let t = flowTime();
     let a = flowAngle(this.origX, this.origY, t);
     let mag = currentGridJitter();
@@ -909,10 +1194,13 @@ class Portal {
 }
 
 class Shard {
-  constructor(x, y, col, wild = false) {
+  // `wildKind` is falsy for ordinary puzzle shards, or a material key
+  // ('mote' / 'cinder') for the loose ones that match no portal.
+  constructor(x, y, col, wildKind = null) {
     this.x = x; this.y = y; this.col = col;
     this.locked = false; this.t = random(1000);
-    this.wild = wild;
+    this.wild = !!wildKind;
+    this.wildKind = wildKind;
   }
   update() { this.t += 0.05; }
   display() {
@@ -921,16 +1209,18 @@ class Shard {
     let [r, g, b] = this.col;
 
     if (this.wild) {
-      if (noise(this.t * 2) < 0.18) { pop(); return; } // flickers — it doesn't quite belong here
+      if (noise(this.t * 2) < 0.15) { pop(); return; } // flickers — it doesn't quite belong here
       rotate(this.t * 40);
       noStroke();
       let pulse = 170 + 80 * sin(this.t * 5);
       for (let s = 12; s > 0; s -= 4) {
         fill(r, g, b, map(s, 0, 12, 120, 20));
-        hexagon(0, 0, s);
+        if (this.wildKind === 'cinder') triangleGlyph(0, 0, s);
+        else hexagon(0, 0, s);
       }
       fill(r, g, b, pulse);
-      hexagon(0, 0, 5);
+      if (this.wildKind === 'cinder') triangleGlyph(0, 0, 5);
+      else hexagon(0, 0, 5);
       pop();
       return;
     }
@@ -1041,6 +1331,7 @@ class Debris {
     let t = flowTime();
     let a = flowAngle(this.x, this.y, t);
     let slowMult = activeEffects.slow > 0 ? 0.3 : 1;
+    if (hasMaterial('lantern')) slowMult *= 0.75; // a lit lantern steadies the drift
     let pushForce = map(effectiveInstability(), 0, 1, 0.03, 0.12) * slowMult;
     this.vx += cos(a) * pushForce;
     this.vy += sin(a) * pushForce;
@@ -1147,14 +1438,23 @@ function hexagon(cx, cy, r) {
   endShape(CLOSE);
 }
 
+function triangleGlyph(cx, cy, r) {
+  beginShape();
+  for (let i = 0; i < 3; i++) {
+    let a = i * 120 - 90;
+    vertex(cx + cos(a) * r, cy + sin(a) * r);
+  }
+  endShape(CLOSE);
+}
+
 class SecretGlyph {
   constructor(x, y) {
     this.x = x; this.y = y; this.t = 0; this.opened = false;
   }
   display() {
     if (this.opened) return;
-    let hasKey = materials.some(m => m.kind === 'key');
-    if (!hasKey) return; // doesn't exist to you until you're carrying something to open it with
+    // It isn't there until you're carrying something that could find it.
+    if (!hasMaterial('key') && !hasMaterial('lantern')) return;
     push();
     translate(this.x, this.y);
     this.t += 1;
@@ -1175,36 +1475,95 @@ class SecretGlyph {
 function handleWildShardPickup() {
   for (let i = shards.length - 1; i >= 0; i--) {
     let s = shards[i];
-    if (s.wild && dist(player.x, player.y, s.x, s.y) < 18) {
-      materials.push({ id: materialIdCounter++, col: WILD_COLOR, kind: 'wild' });
-      spawnBurst(s.x, s.y, WILD_COLOR);
+    if (s.wild && dist(player.x, player.y, s.x, s.y) < 19) {
+      materials.push({ id: materialIdCounter++, kind: s.wildKind });
+      spawnBurst(s.x, s.y, matCol(s.wildKind));
+      showCraftMessage(MATERIAL_TYPES[s.wildKind].label + " POCKETED",
+                       MATERIAL_TYPES[s.wildKind].note, matCol(s.wildKind));
       shards.splice(i, 1);
     }
   }
 }
 
+function findRecipe(kindA, kindB) {
+  return RECIPES.find(r =>
+    (r.a === kindA && r.b === kindB) || (r.a === kindB && r.b === kindA));
+}
+
 function combineMaterials(i, j) {
+  let kindA = materials[i].kind;
+  let kindB = materials[j].kind;
+  let recipe = findRecipe(kindA, kindB);
+
+  if (!recipe) {
+    showCraftMessage("THEY WON'T JOIN",
+      MATERIAL_TYPES[kindA].label + " + " + MATERIAL_TYPES[kindB].label + " — try another pair",
+      [200, 120, 120]);
+    return;
+  }
+
   let hi = max(i, j), lo = min(i, j);
   let dropX = MATERIAL_TRAY_X + hi * MATERIAL_GAP;
   let dropY = MATERIAL_TRAY_Y;
   materials.splice(hi, 1);
   materials.splice(lo, 1);
-  materials.push({ id: materialIdCounter++, col: KEY_COLOR, kind: 'key' });
-  spawnBurst(dropX, dropY, KEY_COLOR);
-  spawnBurst(dropX, dropY, KEY_COLOR);
-  triggerShake(5);
-  craftMessage = "A KEY TAKES SHAPE";
-  craftMessageTimer = 100;
+  materials.push({ id: materialIdCounter++, kind: recipe.out });
+
+  let outCol = matCol(recipe.out);
+  spawnBurst(dropX, dropY, outCol);
+  spawnBurst(dropX, dropY, outCol);
+  spawnBurst(player.x, player.y, outCol);
+  triggerShake(recipe.out === 'seed' ? 12 : 5);
+  crackFlash = recipe.out === 'seed' ? 110 : 40;
+
+  let label = MATERIAL_TYPES[kindA].label + " + " + MATERIAL_TYPES[kindB].label +
+              " → " + MATERIAL_TYPES[recipe.out].label;
+  if (!discoveredRecipes.includes(label)) discoveredRecipes.push(label);
+
+  if (recipe.out === 'seed') {
+    showCraftMessage("A SEED. IT'S WARM.",
+      "carry it to the last wall and don't let go", outCol);
+  } else {
+    showCraftMessage(MATERIAL_TYPES[recipe.out].label + " TAKES SHAPE",
+      MATERIAL_TYPES[recipe.out].note, outCol);
+  }
+}
+
+function showCraftMessage(msg, sub, col) {
+  craftMessage = msg;
+  craftMessageSub = sub || "";
+  craftMessageCol = col || [255, 210, 110];
+  craftMessageTimer = 130;
+}
+
+function drawCraftMessage() {
+  if (craftMessageTimer <= 0) return;
+  push();
+  textAlign(CENTER, CENTER);
+  let a = map(craftMessageTimer, 0, 130, 0, 240, true);
+  let [r, g, b] = craftMessageCol;
+  fill(r, g, b, a);
+  textSize(13);
+  text(craftMessage, width / 2, height / 2 + 66);
+  if (craftMessageSub) {
+    fill(r, g, b, a * 0.65);
+    textSize(9);
+    text(craftMessageSub, width / 2, height / 2 + 86);
+  }
+  pop();
+  craftMessageTimer--;
 }
 
 function drawMaterialsTray() {
-  if (materials.length === 0) return;
   push();
   noStroke();
   textAlign(LEFT, TOP);
   textSize(8);
-  fill(180, 200, 220, 140);
-  text("MATERIALS — drag one onto another to combine", MATERIAL_TRAY_X, MATERIAL_TRAY_Y - 16);
+  fill(180, 200, 220, materials.length ? 150 : 90);
+  text(materials.length
+        ? "CARRYING — drag one onto another"
+        : "CARRYING — nothing yet",
+       MATERIAL_TRAY_X - 2, MATERIAL_TRAY_Y - 17);
 
   for (let i = 0; i < materials.length; i++) {
     if (i === heldMaterialIdx) continue; // drawn last, on top
@@ -1219,17 +1578,57 @@ function drawMaterialsTray() {
 function drawMaterialIcon(m, x, y) {
   push();
   translate(x, y);
+  let [r, g, b] = matCol(m.kind);
+
+  // soft halo so items read against a busy grid
+  noStroke();
+  for (let s = 20; s > 0; s -= 5) {
+    fill(r, g, b, map(s, 0, 20, 40, 6));
+    rect(0, 0, s, s);
+  }
+
   rotate(frameCount * 1.5);
   noFill();
   strokeWeight(1.5);
-  let [r, g, b] = m.col;
-  stroke(r, g, b, 220);
-  if (m.kind === 'key') {
-    rect(0, 0, 11, 11);
-    rotate(45);
-    rect(0, 0, 6, 6);
-  } else {
-    hexagon(0, 0, 7);
+  stroke(r, g, b, 235);
+
+  switch (m.kind) {
+    case 'mote':    hexagon(0, 0, 7); break;
+    case 'cinder':  triangleGlyph(0, 0, 8); break;
+    case 'bloom':
+      for (let k = 0; k < 3; k++) { rotate(40); rect(0, 0, 11, 5); }
+      break;
+    case 'key':
+      rect(0, 0, 11, 11); rotate(45); rect(0, 0, 6, 6);
+      break;
+    case 'lantern':
+      rect(0, 0, 12, 12);
+      strokeWeight(1);
+      stroke(r, g, b, 150);
+      rect(0, 0, 18, 18);
+      break;
+    case 'seed':
+      strokeWeight(2);
+      hexagon(0, 0, 8);
+      stroke(r, g, b, 140 + 80 * sin(frameCount * 5));
+      hexagon(0, 0, 13);
+      break;
+  }
+  pop();
+}
+
+function drawRecipeBook() {
+  if (discoveredRecipes.length === 0) return;
+  push();
+  noStroke();
+  textAlign(LEFT, BOTTOM);
+  textSize(8);
+  let y = height - 16 - (discoveredRecipes.length - 1) * 11;
+  fill(150, 170, 195, 120);
+  text("MADE SO FAR", 14, y - 12);
+  for (let i = 0; i < discoveredRecipes.length; i++) {
+    fill(190, 205, 225, 150);
+    text(discoveredRecipes[i], 14, y + i * 11);
   }
   pop();
 }
@@ -1237,7 +1636,7 @@ function drawMaterialIcon(m, x, y) {
 function enterSecretRoom(text) {
   inSecretVignette = true;
   secretVignetteText = text || "the void keeps something back, even here.";
-  PLAYER_MAX_HP = min(PLAYER_MAX_HP + 1, 5);
+  PLAYER_MAX_HP = min(PLAYER_MAX_HP + 1, 6);
   player.hp = PLAYER_MAX_HP;
   triggerShake(6);
 }

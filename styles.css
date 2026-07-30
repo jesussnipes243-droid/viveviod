@@ -347,6 +347,25 @@ h1, h2 {
   flex-shrink: 0;
 }
 
+.craft-heading {
+  font-size: 13px;
+  color: var(--accent-cyan);
+  border-bottom: 1px dashed var(--line);
+  padding-bottom: 10px;
+  margin: 34px 0 18px;
+}
+
+.craft-note {
+  font-size: 17px;
+  color: var(--ink-dim);
+  margin: 0;
+}
+
+.craft-note em {
+  color: var(--accent-green);
+  font-style: normal;
+}
+
 /* ---------------------------------------------------------------------- */
 /* footer */
 
