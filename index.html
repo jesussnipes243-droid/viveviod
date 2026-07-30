@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VOID // VERSE</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- p5.js core + p5.sound -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+  <script src="sketch.js" defer></script>
+</head>
+
+<body>
+
+  <header class="site-header">
+    <a class="wordmark" href="#play">
+      <span class="wordmark-bracket">[</span>VOID<span class="wordmark-slash">//</span>VERSE<span class="wordmark-bracket">]</span>
+    </a>
+    <nav>
+      <a href="#play">PLAY</a>
+      <a href="#lore">LORE</a>
+      <a href="#controls">CONTROLS</a>
+    </nav>
+  </header>
+
+  <main>
+
+    <section id="play" class="game-section">
+      <div class="crt-frame">
+        <div id="sketch"></div>
+        <div class="scanlines" aria-hidden="true"></div>
+        <div class="vignette" aria-hidden="true"></div>
+        <button id="skip-intro" class="skip-btn">SKIP INTRO »</button>
+      </div>
+
+      <div class="game-toolbar">
+        <div class="toolbar-group">
+          <button id="toggle-sound" class="pixel-btn">♪ MUSIC</button>
+          <label class="vol-label">
+            VOL
+            <input id="vol" type="range" min="0" max="1" step="0.01" value="0.5" />
+            <span id="volVal">0.50</span>
+          </label>
+        </div>
+        <div class="toolbar-group">
+          <label class="rift-label">
+            RIFT STABILITY
+            <input id="rift" type="range" min="0" max="1" step="0.01" value="0.35" />
+            <span id="riftVal">RESTLESS</span>
+          </label>
+        </div>
+        <p class="toolbar-hint">follow the light to begin &mdash; then drag shards into portals and dodge the debris</p>
+      </div>
+    </section>
+
+    <section id="lore" class="lore-section">
+      <h2>&gt; TRANSMISSION_LOG.001</h2>
+      <p class="lore-note">(the opening sequence in-game tells this part live — this is the archived transcript)</p>
+      <div class="lore-body">
+        <div class="lore-text">
+          <p>
+            Every village has a kid who sneaks out at night. This one followed a light
+            into the treeline &mdash; a mystic, or something wearing its shape &mdash;
+            deeper than the critters and the mist should allow.
+          </p>
+          <p>
+            The ground gave out. Not a hole. A <em>seam</em>. And on the other side of it,
+            the rainforest doesn't end where it should &mdash; it folds into something
+            colder, wider, full of drifting wreckage that was never a tree.
+          </p>
+          <p>
+            Two worlds pressed into one void. The only way through is the shards of
+            light still drifting loose in it &mdash; and whatever gets built from what's
+            left behind when a wall finally cracks.
+          </p>
+        </div>
+        <img class="lore-img" src="assets/gator.jpg" alt="something watching from the treeline" />
+      </div>
+    </section>
+
+    <section id="controls" class="controls-section">
+      <h2>&gt; CONTROL_SCHEME</h2>
+      <ul class="controls-list">
+        <li><span class="key">MOUSE</span> steer the glow — it has real momentum, so it drifts</li>
+        <li><span class="key">FOLLOW</span> during the intro, get close to the light to advance</li>
+        <li><span class="key">DRAG</span> pick up a luminescent shard</li>
+        <li><span class="key">DROP</span> release it on its matching portal ring</li>
+        <li><span class="key">DODGE</span> debris now costs you a hit — three hits knocks you back and drops a fragment</li>
+        <li><span class="key">GRAB</span> drifting power-ups: speed, slow-field, or shield</li>
+        <li><span class="key">CLICK</span> break a cracked wall once you're carrying a fragment</li>
+        <li><span class="key">COMBINE</span> drag one found material onto another to craft a key</li>
+        <li><span class="key">UNLOCK</span> click a faint rune while carrying a key to open a secret</li>
+      </ul>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>VOID // VERSE &mdash; prototype build &mdash; no AI in the game loop (yet)</p>
+  </footer>
+
+</body>
+</html>
